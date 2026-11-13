@@ -1,0 +1,60 @@
+name: radar
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: radar
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - run: pip install -q -r requirements.txt
+
+      - name: Restore state
+        run: |
+          mkdir -p data
+          if git ls-remote --exit-code --heads origin state >/dev/null; then
+            git fetch --depth=1 origin state
+            git show FETCH_HEAD:radar.db > data/radar.db
+          else
+            rc=$?
+            if [ "$rc" -ne 2 ]; then exit "$rc"; fi
+            echo "state branch does not exist yet"
+          fi
+
+      - name: Run radar
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          APP_URL: https://quwwix.github.io/roblox-radar/
+        run: python run.py
+
+      - name: Save state
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir out
+          cp data/radar.db data/data.json out/
+          cd out
+          git init -q -b state
+          git config user.name "radar-bot"
+          git config user.email "radar-bot@users.noreply.github.com"
+          git add .
+          git commit -qm "state"
+          git push -qf "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" state
