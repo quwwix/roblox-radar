@@ -70,6 +70,14 @@ async def collect() -> int:
             db.upsert_game(con, uid, g, ts)
         if uid in missing:
             players[uid] = g["players"]
+    last = db.sweeps(con)
+    if last:
+        prev_n = con.execute("SELECT COUNT(*) FROM snaps WHERE ts=?", (last[-1],)).fetchone()[0]
+        if len(players) < 0.6 * prev_n:
+            # Roblox віддав неповні дані: такий замір зіпсував би списки, пропускаємо його
+            con.commit()
+            con.close()
+            raise RuntimeError(f"неповні дані від Roblox: {len(players)} ігор замість ~{prev_n}")
     con.executemany("INSERT OR REPLACE INTO snaps VALUES(?,?,?)", [(ts, u, p) for u, p in players.items()])
     con.commit()
     db.cleanup(con)
@@ -89,7 +97,13 @@ def baseline(con, now_ts, period=DAY, tol=3 * H, min_age=H):
             ts = all_ts[0]
     if ts is None or ts >= now_ts:
         return None, {}
-    return ts, db.players_at(con, ts)
+    base = db.players_at(con, ts)
+    # Ігри, яких тоді ще не було під наглядом: беремо їхній ПЕРШИЙ відомий онлайн.
+    # Інакше гра, що просто вперше потрапила в чарти, виглядала б як ріст "з нуля".
+    for uid, players, _ in con.execute(
+            "SELECT uid, players, MIN(ts) FROM snaps WHERE ts > ? AND ts < ? GROUP BY uid", (ts, now_ts)):
+        base.setdefault(uid, players)
+    return ts, base
 
 
 def latest(con):
@@ -107,7 +121,9 @@ def growth(con, limit=10, min_now=1500, min_gain=1000):
     rows = []
     for uid, p in now.items():
         prev = base.get(uid)
-        gain = p - (prev or 0)
+        if prev is None:          # гру бачимо вперше: рости їй ще нема від чого
+            continue
+        gain = p - prev
         if p < min_now or gain < min_gain:
             continue
         pct = (p / max(prev or 0, 300) - 1) * 100
@@ -123,12 +139,14 @@ def theme_stats(con, period=DAY):
         return None, []
     info = db.game_info(con)
     agg: dict[str, list] = {}
-    for uid in set(now) | set(base):
+    for uid in now:
+        if uid not in base:      # порівнюємо лише ігри, які є в обох замірах
+            continue
         for t in themes_of(info.get(uid, {}).get("name", "")):
             a = agg.setdefault(t, [0, 0, 0])
-            a[0] += now.get(uid, 0)
-            a[1] += base.get(uid, 0)
-            a[2] += 1 if now.get(uid, 0) > 0 else 0
+            a[0] += now[uid]
+            a[1] += base[uid]
+            a[2] += 1
     rows = []
     for t, (n, b, cnt) in agg.items():
         if n + b < 2000:
@@ -167,7 +185,9 @@ def explosions(con, min_now=5000, factor=3.0):
         return []
     out = []
     for uid, p in now.items():
-        prev = base.get(uid) or 0
+        if uid not in base:
+            continue
+        prev = base[uid]
         if p >= min_now and p >= factor * max(prev, 500) and not db.recently_alerted(con, uid, "boom", 3 * DAY):
             out.append((uid, p, prev, now_ts - base_ts))
     out.sort(key=lambda r: r[1], reverse=True)
@@ -244,7 +264,7 @@ def section_growth(con, info, limit=10):
         return "🚀 <b>Ростуть найшвидше</b>\nЩе збираю історію — перші цифри будуть за годину-дві."
     lines = [f"🚀 <b>Ростуть найшвидше</b> (за {period_s(per)})"]
     for i, (uid, p, prev, gain, pct) in enumerate(rows, 1):
-        tag = "нова в чартах" if prev is None else pct_s(pct)
+        tag = pct_s(pct)
         lines.append(f"{i}. {link(info, uid)} — <b>{k(p)}</b> ({tag}, +{k(gain)}){age_s(info, uid)}")
     if not rows:
         lines.append("Поки нічого не росте помітно.")

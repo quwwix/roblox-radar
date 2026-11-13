@@ -39,6 +39,9 @@ async def refresh(rc, con, force=False):
     uids = db.tracked_uids(con, now - analysis.TRACK_WINDOW)
     n = 0
     for i in range(0, len(uids), 50):
+        if time.time() - now > 150:      # Roblox гальмує: решту доберемо наступного разу
+            log.warning("Характеристики: не встиг усе, оновлено частину")
+            break
         chunk = uids[i:i + 50]
         ids = ",".join(map(str, chunk))
         data = await roblox._get(rc, roblox.GAMES, {"universeIds": ids})

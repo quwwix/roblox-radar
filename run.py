@@ -225,16 +225,22 @@ async def commands(c, rc, con):
         msg = u.get("message") or {}
         text = (msg.get("text") or "").strip()
         chat = (msg.get("chat") or {}).get("id")
-        if not text.startswith("/"):
-            continue
         if chat != CHAT:
-            await tg(c, "sendMessage", chat_id=chat, text="Це приватний бот 🔒")
+            if text.startswith("/"):
+                await tg(c, "sendMessage", chat_id=chat, text="Це приватний бот 🔒")
+            continue
+        if not text.startswith("/"):
+            await send(c, "Я розумію лише команди. Усі списки — в меню (кнопка «Відкрити»), а команди тут: /help")
             continue
         cmd, _, arg = text.partition(" ")
         cmd = cmd.split("@")[0].lower()
         info = db.game_info(con)
         try:
-            if cmd in ("/start", "/help"):
+            if cmd == "/start" and arg.startswith("w_") and arg[2:].isdigit():      # кнопка «Стежити» з меню
+                await cmd_watch(c, rc, con, arg[2:])
+            elif cmd == "/start" and arg.startswith("u_") and arg[2:].isdigit():    # кнопка «Не стежити»
+                await cmd_unwatch(c, con, arg[2:])
+            elif cmd in ("/start", "/help"):
                 await set_menu_button(c)
                 await send(c, HELP, button=True)
             elif cmd == "/watch":
@@ -375,7 +381,10 @@ async def main():
     if not TOKEN or not CHAT:
         print("❌ Немає TELEGRAM_TOKEN або TELEGRAM_CHAT_ID")
         sys.exit(1)
-    await analysis.collect()
+    try:
+        await analysis.collect()
+    except Exception:
+        log.exception("Збір даних не вдався, працюю з попередніми")
     con = db.connect()
     if db.kv_get(con, "seed_ts") is None:
         db.kv_set(con, "seed_ts", int(time.time()))
