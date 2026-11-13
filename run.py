@@ -25,6 +25,7 @@ import httpx
 import analysis
 import db
 import details
+import keywords
 import roblox
 
 ROOT = Path(__file__).parent
@@ -61,6 +62,10 @@ HELP = (
     f"🗞 щодня о {REPORT_HOUR}:00 — звіт: що росте, нові хіти, теми;\n"
     f"📊 у неділю о {WEEKLY_HOUR}:00 — графік за тиждень.\n\n"
     "Кнопка <b>«Відкрити»</b> внизу — меню з усіма списками, працює миттєво.\n\n"
+    "<b>Ключові слова</b> (шукаю всі ігри зі словом і пишу про нові):\n"
+    "/keyword <i>слово</i>, наприклад /keyword egg\n"
+    "/unkeyword <i>слово</i>\n"
+    "/keywords — мої слова\n\n"
     "<b>Стеження за грою</b> (відповідаю протягом ~10 хв):\n"
     "/watch <i>назва або посилання</i>\n"
     "/unwatch <i>назва</i>\n"
@@ -144,6 +149,10 @@ async def urgent(c, con):
         await send(c, f"🆕 <b>Новий хіт!</b>\n{analysis.link(info, uid)}\n"
                       f"Грі лише {age:.0f} дн., а вже <b>{analysis.k(p)}</b> онлайн")
         db.mark_alert(con, uid, "newhit")
+    for word, uid, p in keywords.fresh(con):
+        await send(c, f"🔎 <b>Нова гра за словом «{html.escape(word)}»</b>\n{analysis.link(info, uid)}\n"
+                      f"Зараз <b>{analysis.k(p)}</b> онлайн{analysis.age_s(info, uid)}")
+        keywords.mark(con, word, uid)
     for uid, p, prev, pct in analysis.watch_changes(con):
         arrow = "📈" if pct > 0 else "📉"
         await send(c, f"{arrow} <b>Список стеження</b>\n{analysis.link(info, uid)}: "
@@ -232,6 +241,26 @@ async def commands(c, rc, con):
                 await cmd_watch(c, rc, con, arg)
             elif cmd == "/unwatch":
                 await cmd_unwatch(c, con, arg)
+            elif cmd == "/keyword":
+                res = keywords.add(con, arg) if arg else "empty"
+                w = html.escape(" ".join(arg.lower().split()))
+                await send(c, {
+                    "ok": f"🔎 Додав слово «{w}». За кілька хвилин у меню на вкладці «Слова» зʼявляться всі ігри з ним, "
+                          "а про нові я писатиму одразу.",
+                    "exists": f"Слово «{w}» вже є. Список: /keywords",
+                    "full": f"Забагато слів (максимум {keywords.MAX_WORDS}). Прибери якесь: /unkeyword слово",
+                    "short": "Слово закоротке, треба хоча б 2 літери.",
+                    "empty": "Напиши так: /keyword egg",
+                }[res])
+                if res == "ok":
+                    await keywords.scan(rc, con)
+            elif cmd == "/unkeyword":
+                ok = keywords.remove(con, arg)
+                await send(c, "Прибрав." if ok else "Такого слова нема. Список: /keywords")
+            elif cmd == "/keywords":
+                ws = keywords.words(con)
+                await send(c, "🔎 <b>Мої слова</b>\n" + "\n".join("• " + html.escape(w) for w in ws)
+                           if ws else "Слів ще нема. Додай: /keyword egg")
             elif cmd == "/list":
                 await send(c, analysis.section_watch(con, info))
             elif cmd == "/report":
@@ -307,14 +336,21 @@ async def export(rc, con):
         "themes": theme_rows,
         "top": [game(uid, p) for uid, p in top],
         "watch": [game(uid, p) for uid, p, prev in watch],
+        "keywords": [{"word": w, "total": total, "games": [game(u, p) for u, p in gs]}
+                     for w, gs, total in keywords.groups(con)],
     }
     ids = set()
     for key in ("alerts", "grow", "new", "top", "watch"):
         ids |= {g["id"] for g in data[key]}
     for t in theme_rows:
         ids |= {g["id"] for g in t["games"][:10]}
-    icons = await roblox.fetch_icons(rc, sorted(ids))
-    data["details"] = details.export(con, ids)
+    for kwg in data["keywords"]:
+        ids |= {g["id"] for g in kwg["games"]}
+    icons = await details.icons(rc, con, ids, set(now))
+    data["details"] = details.export(con, ids, set(now) - ids)
+    # усі ігри для пошуку в меню (компактно)
+    data["all"] = [game(uid, p) for uid, p in sorted(now.items(), key=lambda x: x[1], reverse=True)]
+    data["keywords_max"] = keywords.MAX_WORDS
 
     def put(g):
         g["icon"] = icons.get(g["id"])
@@ -324,6 +360,11 @@ async def export(rc, con):
     for t in theme_rows:
         for g in t["games"]:
             put(g)
+    for kwg in data["keywords"]:
+        for g in kwg["games"]:
+            put(g)
+    for g in data["all"]:
+        put(g)
     (ROOT / "data" / "data.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
     log.info("data.json: %d ростуть, %d нових, %d тем", len(data["grow"]), len(data["new"]), len(theme_rows))
 
@@ -343,7 +384,8 @@ async def main():
             await set_menu_button(c)
             db.kv_set(con, "menu_set", APP_URL)
         for name, step in (("термінові", urgent(c, con)), ("розклад", scheduled(c, con)),
-                           ("команди", commands(c, rc, con)), ("характеристики", details.refresh(rc, con)),
+                           ("команди", commands(c, rc, con)), ("слова", keywords.scan(rc, con)),
+                           ("характеристики", details.refresh(rc, con)),
                            ("експорт", export(rc, con))):
             try:
                 await step

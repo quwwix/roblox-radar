@@ -98,7 +98,7 @@ const tg = window.Telegram && Telegram.WebApp;
 if (tg) { try { tg.ready(); tg.expand(); tg.setHeaderColor("#0d0f14"); tg.setBackgroundColor("#0d0f14"); } catch (e) {} }
 
 const TABS = [
-  ["grow", "🚀 Ростуть"], ["new", "🆕 Нові хіти"], ["themes", "🔥 Теми"], ["top", "🏆 Топ"], ["watch", "👀 Стежу"],
+  ["grow", "🚀 Ростуть"], ["new", "🆕 Нові хіти"], ["themes", "🔥 Теми"], ["kw", "🔎 Слова"], ["top", "🏆 Топ"], ["watch", "👀 Стежу"],
 ];
 let data = null, tab = "grow", openTheme = null;
 try { tab = localStorage.getItem("tab") || "grow"; } catch (e) {}
@@ -219,12 +219,10 @@ function render() {
   const per = data.period_h ? "за " + (data.period_h >= 22 && data.period_h <= 26 ? "24 год" : data.period_h + " год") : null;
 
   if (q) {  // пошук по всіх списках одразу
-    const seen = new Set(), found = [];
-    for (const key of ["grow", "new", "top", "watch"]) for (const g of data[key]) if (match(g) && !seen.has(g.id)) { seen.add(g.id); found.push(g); }
-    for (const t of data.themes) for (const g of t.games) if (match(g) && !seen.has(g.id)) { seen.add(g.id); found.push(g); }
-    found.sort((a, b) => (b.players || 0) - (a.players || 0));
-    if (!found.length) list.append(el("div", "empty", "Нічого не знайшов"));
-    found.forEach((g) => list.append(gameRow(g, null)));
+    const found = (data.all || []).filter(match);
+    if (!found.length) { list.append(el("div", "empty", "Серед " + data.tracked + " ігор, за якими я стежу, такої нема. Щоб шукати по всьому Roblox, додай слово: напиши боту /keyword " + q)); return; }
+    list.append(el("div", "note", "Знайшов " + found.length + (found.length > 80 ? ", показую перші 80" : "")));
+    found.slice(0, 80).forEach((g) => list.append(gameRow(g, null)));
     return;
   }
 
@@ -238,6 +236,15 @@ function render() {
     list.append(el("div", "note", "Зміна онлайну " + per + (data.period_h < 22 ? " (історія ще збирається)" : "")));
     if (!data.grow.length) list.append(el("div", "empty", "Зараз нічого помітно не росте"));
     data.grow.forEach((g, i) => list.append(gameRow(g, i, { growTab: true })));
+  } else if (tab === "kw") {
+    const kws = data.keywords || [];
+    if (!kws.length) { list.append(el("div", "empty", "Тут будуть усі ігри з твоїми словами в назві чи описі. Додай слово: напиши боту /keyword egg")); return; }
+    list.append(el("div", "note", "Ігри з пошуку Roblox за твоїми словами. Про нові пишу в чат одразу"));
+    kws.forEach((kw) => {
+      list.append(el("h2", null, "«" + kw.word + "» · " + kw.total + " ігор"));
+      if (!kw.games.length) list.append(el("div", "empty", "Шукаю… зʼявиться за кілька хвилин"));
+      kw.games.forEach((g, i) => list.append(gameRow(g, i)));
+    });
   } else if (tab === "new") {
     list.append(el("div", "note", "Ігри, молодші за 30 днів, з онлайном від 1K"));
     if (!data.new.length) list.append(el("div", "empty", "Нових хітів зараз нема"));

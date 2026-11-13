@@ -17,7 +17,7 @@ VOTES = "https://games.roblox.com/v1/games/votes"
 COLUMNS = {
     "visits": "INTEGER", "favs": "INTEGER", "up": "INTEGER", "down": "INTEGER",
     "max_players": "INTEGER", "updated": "TEXT", "creator": "TEXT", "descr": "TEXT",
-    "genre2": "TEXT",
+    "genre2": "TEXT", "icon": "TEXT",
 }
 
 
@@ -106,13 +106,27 @@ def history(con, uids, points=48):
     return out
 
 
-def export(con, uids):
+async def icons(rc, con, fresh_ids, all_ids):
+    """Іконки: для ігор у списках беремо свіжі, для решти — лише відсутні (зберігаємо в базі)."""
     ensure_schema(con)
+    have = dict(con.execute("SELECT uid, icon FROM games WHERE icon IS NOT NULL").fetchall())
+    need = sorted(set(fresh_ids) | {u for u in all_ids if u not in have})
+    got = await roblox.fetch_icons(rc, need)
+    con.executemany("UPDATE games SET icon=? WHERE uid=?", [(url, uid) for uid, url in got.items()])
+    con.commit()
+    have.update(got)
+    return have
+
+
+def export(con, uids, light=()):
+    """Повні картки для uids; для light — без графіка й опису (щоб файл був меншим)."""
+    ensure_schema(con)
+    light = set(light)
     uids = list(uids)
-    sess = sessions(con, uids)
+    sess = sessions(con, uids + list(light))
     hist = history(con, uids)
     out = {}
-    for uid in uids:
+    for uid in uids + list(light):
         row = con.execute(
             "SELECT visits, favs, up, down, max_players, updated, creator, descr, genre2, created FROM games WHERE uid=?",
             (uid,)).fetchone()
@@ -120,7 +134,7 @@ def export(con, uids):
             continue
         visits, favs, up, down, maxp, updated, creator, descr, genre, created = row
         peak = con.execute("SELECT MAX(players) FROM snaps WHERE uid=?", (uid,)).fetchone()[0]
-        d = {"visits": visits, "favs": favs, "max": maxp, "creator": creator, "descr": descr, "genre": genre,
+        d = {"visits": visits, "favs": favs, "max": maxp, "creator": creator, "descr": None if uid in light else descr, "genre": genre,
              "created": created[:10] if created else None,
              "upd_days": round((time.time() - analysis._parse(updated)) / DAY, 1) if updated else None,
              "like": round(up * 100 / (up + down)) if up is not None and down is not None and up + down > 0 else None,
