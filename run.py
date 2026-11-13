@@ -24,6 +24,7 @@ import httpx
 
 import analysis
 import db
+import details
 import roblox
 
 ROOT = Path(__file__).parent
@@ -313,6 +314,7 @@ async def export(rc, con):
     for t in theme_rows:
         ids |= {g["id"] for g in t["games"][:10]}
     icons = await roblox.fetch_icons(rc, sorted(ids))
+    data["details"] = details.export(con, ids)
 
     def put(g):
         g["icon"] = icons.get(g["id"])
@@ -341,7 +343,8 @@ async def main():
             await set_menu_button(c)
             db.kv_set(con, "menu_set", APP_URL)
         for name, step in (("термінові", urgent(c, con)), ("розклад", scheduled(c, con)),
-                           ("команди", commands(c, rc, con)), ("експорт", export(rc, con))):
+                           ("команди", commands(c, rc, con)), ("характеристики", details.refresh(rc, con)),
+                           ("експорт", export(rc, con))):
             try:
                 await step
             except Exception:
